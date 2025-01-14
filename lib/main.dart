@@ -708,12 +708,15 @@ class _QueensGameScreenState extends State<QueensGameScreen> with SingleTickerPr
     setState(() {
       cellStates[key] = newState;
       
+      // Clear all violations first
+      _errorCells = {};
+      _violatedRules = {};
+      
       switch (newState) {
         case CellState.blocked:
           _checkBlockedRegions(row, col);
           break;
         case CellState.queen:
-          _clearViolationsIfResolved();
           _checkRuleViolations(row, col);
           _checkWinCondition();
           break;
