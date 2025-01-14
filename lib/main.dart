@@ -1501,3 +1501,4 @@ class _QueensGameScreenState extends State<QueensGameScreen> with SingleTickerPr
 // TODO: 
 //Add a hint system
 //Make the levels not totally random, but more easily solvable through known tactics.
+// timer not visible on iphone portrait mode
