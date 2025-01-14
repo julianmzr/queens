@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
 import 'dart:math';
+import 'package:flutter_svg/flutter_svg.dart';
 
 class Board {
   final List<List<Color>> colorRegions;
@@ -140,27 +141,54 @@ class BoardStorage {
       regions[queen[0]][queen[1]] = availableColors[i];
     }
 
-    // Assign random growth rates to each color (between 0.3 and 0.9)
+    // Assign random growth rates to each color (between 0.2 and 0.9)
+    // Higher variance in growth rates will lead to more size variation
     Map<Color, double> growthRates = {};
+    Random random = Random();
     for (var color in availableColors) {
-      growthRates[color] = 0.3 + Random().nextDouble() * 0.6;
+      // 10% chance for a color to be "dominant" (larger region)
+      if (random.nextDouble() < 0.1) {
+        growthRates[color] = 0.7 + random.nextDouble() * 0.2; // 0.7-0.9
+      } else {
+        growthRates[color] = 0.2 + random.nextDouble() * 0.5; // 0.2-0.7
+      }
     }
 
     // Then grow each region one cell at a time, taking turns
     bool changed;
+    int maxIterations = 100; // Prevent infinite loops
+    int iterations = 0;
+    
     do {
       changed = false;
+      iterations++;
+      
       // Shuffle the order each time to avoid bias
       List<Color> currentColors = List.from(availableColors)..shuffle();
+      
+      // Calculate current sizes
+      Map<Color, int> regionSizes = {};
+      for (int row = 0; row < 8; row++) {
+        for (int col = 0; col < 8; col++) {
+          Color cellColor = regions[row][col];
+          if (cellColor != Colors.transparent) {
+            regionSizes[cellColor] = (regionSizes[cellColor] ?? 0) + 1;
+          }
+        }
+      }
+      
       for (var color in currentColors) {
+        // Skip if region is already large
+        if ((regionSizes[color] ?? 0) > 20) continue;
+        
         // Try to grow this region, with its specific growth rate
-        if (Random().nextDouble() < growthRates[color]!) {
+        if (random.nextDouble() < growthRates[color]!) {
           if (_growRegionOneStep(regions, color)) {
             changed = true;
           }
         }
       }
-    } while (changed);
+    } while (changed && iterations < maxIterations && _hasTransparentCells(regions));
 
     // Fill any remaining cells with adjacent colors
     while (_hasTransparentCells(regions)) {
@@ -630,53 +658,77 @@ class _QueensGameScreenState extends State<QueensGameScreen> {
   }
 
   Widget _buildCellContent(CellState state) {
-    switch (state) {
-      case CellState.queen:
-        return const Icon(
-          Icons.person,
-          color: Colors.black,
-          size: 32,
-        );
-      case CellState.blocked:
-        return const Icon(
-          Icons.close,
-          color: Colors.red,
-          size: 28,
-        );
-      case CellState.empty:
-        return const SizedBox.shrink();
-    }
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final cellSize = min(constraints.maxWidth, constraints.maxHeight);
+        final iconSize = cellSize * 0.6;
+        
+        switch (state) {
+          case CellState.queen:
+            return SvgPicture.string(
+              '''<svg width="32" height="32" viewBox="0 0 24 24" fill="black">
+                <path d="M12 2L8 7L3 4L4 10L2 16H22L20 10L21 4L16 7L12 2ZM12 4.5L14.5 7.8L12 10L9.5 7.8L12 4.5ZM6.9 14L8 10.2L10.5 12.5L12 10L13.5 12.5L16 10.2L17.1 14H6.9Z"/>
+              </svg>''',
+              width: iconSize,
+              height: iconSize,
+            );
+          case CellState.blocked:
+            return SvgPicture.string(
+              '''<svg width="32" height="32" viewBox="0 0 24 24" fill="black">
+                <path d="M6 6L10 10L6 14L8 16L12 12L16 16L18 14L14 10L18 6L16 4L12 8L8 4L6 6Z"/>
+              </svg>''',
+              width: iconSize * 0.7,
+              height: iconSize * 0.7,
+            );
+          case CellState.empty:
+            return const SizedBox.shrink();
+        }
+      },
+    );
   }
 
   Widget _buildRulesDisplay() {
     return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(vertical: 8.0),
+      margin: const EdgeInsets.symmetric(vertical: 8.0),
       child: Wrap(
         alignment: WrapAlignment.center,
-        spacing: 16.0,
+        spacing: 8.0,
         runSpacing: 8.0,
         children: GameRule.values.map((rule) {
           final bool isViolated = _violatedRules.contains(rule);
           return Container(
-            constraints: BoxConstraints(maxWidth: 200),
+            padding: EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: isViolated ? Colors.red[50] : Colors.white,
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(
+                color: isViolated ? Colors.red[300]! : Colors.grey[300]!,
+                width: 1,
+              ),
+              boxShadow: [
+                if (isViolated)
+                  BoxShadow(
+                    color: Colors.red[100]!.withOpacity(0.5),
+                    blurRadius: 4,
+                    offset: Offset(0, 2),
+                  )
+              ],
+            ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
                 Icon(
-                  isViolated ? Icons.cancel : Icons.check_circle,
-                  color: isViolated ? Colors.red : Colors.green,
-                  size: 16,
+                  _getRuleIcon(rule),
+                  color: isViolated ? Colors.red[700] : Colors.grey[700],
+                  size: 18,
                 ),
-                const SizedBox(width: 4),
-                Flexible(
-                  child: Text(
-                    rule.description,
-                    style: TextStyle(
-                      fontSize: 14,
-                      color: isViolated ? Colors.red : Colors.black87,
-                      fontWeight: isViolated ? FontWeight.bold : FontWeight.normal,
-                    ),
+                const SizedBox(width: 6),
+                Text(
+                  _getRuleShortText(rule),
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: isViolated ? Colors.red[900] : Colors.grey[850],
+                    fontWeight: isViolated ? FontWeight.w600 : FontWeight.w500,
                   ),
                 ),
               ],
@@ -685,6 +737,32 @@ class _QueensGameScreenState extends State<QueensGameScreen> {
         }).toList(),
       ),
     );
+  }
+
+  IconData _getRuleIcon(GameRule rule) {
+    switch (rule) {
+      case GameRule.onePerRow:
+        return Icons.table_rows_rounded;
+      case GameRule.onePerColumn:
+        return Icons.view_column_rounded;
+      case GameRule.onePerDiagonal:
+        return Icons.trending_up_rounded;
+      case GameRule.onePerRegion:
+        return Icons.palette_rounded;
+    }
+  }
+
+  String _getRuleShortText(GameRule rule) {
+    switch (rule) {
+      case GameRule.onePerRow:
+        return '1 per row';
+      case GameRule.onePerColumn:
+        return '1 per column';
+      case GameRule.onePerDiagonal:
+        return 'max 1 per diagonal';
+      case GameRule.onePerRegion:
+        return '1 per region';
+    }
   }
 
   // Add this new method to check all queens
@@ -812,7 +890,7 @@ class _QueensGameScreenState extends State<QueensGameScreen> {
   // Add this new method to check for fully blocked regions
   void _checkBlockedRegions(int row, int col) {
     Set<String> errorCells = {};
-    bool hasViolation = false;
+    _violatedRules = {}; // Reset violated rules
 
     // Check row
     bool isRowBlocked = true;
@@ -823,7 +901,7 @@ class _QueensGameScreenState extends State<QueensGameScreen> {
       }
     }
     if (isRowBlocked) {
-      hasViolation = true;
+      _violatedRules.add(GameRule.onePerRow);
       for (int c = 0; c < gridSize; c++) {
         errorCells.add(_getCellKey(row, c));
       }
@@ -838,51 +916,9 @@ class _QueensGameScreenState extends State<QueensGameScreen> {
       }
     }
     if (isColBlocked) {
-      hasViolation = true;
+      _violatedRules.add(GameRule.onePerColumn);
       for (int r = 0; r < gridSize; r++) {
         errorCells.add(_getCellKey(r, col));
-      }
-    }
-
-    // Check diagonals
-    List<List<int>> mainDiagonal = [];
-    List<List<int>> antiDiagonal = [];
-    
-    // Collect cells in both diagonals that contain the placed block
-    for (int i = 0; i < gridSize; i++) {
-      for (int j = 0; j < gridSize; j++) {
-        if ((i - j) == (row - col)) {
-          mainDiagonal.add([i, j]);
-        }
-        if ((i + j) == (row + col)) {
-          antiDiagonal.add([i, j]);
-        }
-      }
-    }
-
-    // Check main diagonal only if it has more than one cell
-    if (mainDiagonal.length > 1) {
-      bool isMainDiagBlocked = mainDiagonal.every(
-        (pos) => _getCellState(pos[0], pos[1]) == CellState.blocked
-      );
-      if (isMainDiagBlocked) {
-        hasViolation = true;
-        for (var pos in mainDiagonal) {
-          errorCells.add(_getCellKey(pos[0], pos[1]));
-        }
-      }
-    }
-
-    // Check anti-diagonal only if it has more than one cell
-    if (antiDiagonal.length > 1) {
-      bool isAntiDiagBlocked = antiDiagonal.every(
-        (pos) => _getCellState(pos[0], pos[1]) == CellState.blocked
-      );
-      if (isAntiDiagBlocked) {
-        hasViolation = true;
-        for (var pos in antiDiagonal) {
-          errorCells.add(_getCellKey(pos[0], pos[1]));
-        }
       }
     }
 
@@ -899,7 +935,7 @@ class _QueensGameScreenState extends State<QueensGameScreen> {
       }
     }
     if (isRegionBlocked) {
-      hasViolation = true;
+      _violatedRules.add(GameRule.onePerRegion);
       for (int r = 0; r < gridSize; r++) {
         for (int c = 0; c < gridSize; c++) {
           if (colorRegions[r][c] == regionColor) {
@@ -909,11 +945,9 @@ class _QueensGameScreenState extends State<QueensGameScreen> {
       }
     }
 
-    if (hasViolation) {
+    if (_violatedRules.isNotEmpty) {
       setState(() {
         _errorCells = errorCells;
-        // Mark all rules as violated when a region is fully blocked
-        _violatedRules = Set.from(GameRule.values);
       });
     }
   }
@@ -1084,38 +1118,76 @@ class _QueensGameScreenState extends State<QueensGameScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: Colors.grey[100],
       appBar: AppBar(
-        title: _showTimer ? Text(_formatDuration(_elapsedTime)) : null,
+        backgroundColor: Colors.white,
+        elevation: 0,
+        title: _showTimer ? Container(
+          padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          decoration: BoxDecoration(
+            color: Colors.grey[200],
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Text(
+            _formatDuration(_elapsedTime),
+            style: TextStyle(
+              color: Colors.black87,
+              fontWeight: FontWeight.w500,
+              fontSize: 18,
+            ),
+          ),
+        ) : null,
         actions: [
-          IconButton(
-            icon: Icon(Icons.undo),
-            onPressed: _actionHistory.isEmpty ? null : _undo,
-            tooltip: 'Undo',
+          Tooltip(
+            message: 'Undo last move',
+            child: IconButton(
+              icon: Icon(Icons.undo_rounded, color: Colors.black54),
+              onPressed: _actionHistory.isEmpty ? null : _undo,
+            ),
           ),
-          IconButton(
-            icon: Icon(Icons.clear_all),
-            onPressed: cellStates.isEmpty ? null : _clearBoard,
-            tooltip: 'Clear Board',
+          Tooltip(
+            message: 'Clear all pieces',
+            child: IconButton(
+              icon: Icon(Icons.delete_outline_rounded, color: Colors.black54),
+              onPressed: cellStates.isEmpty ? null : _clearBoard,
+            ),
           ),
-          IconButton(
-            icon: Icon(_isTimerRunning ? Icons.pause : Icons.play_arrow),
-            onPressed: _toggleTimer,
-            tooltip: _isTimerRunning ? 'Pause Timer' : 'Start Timer',
+          Tooltip(
+            message: _isTimerRunning ? 'Pause timer' : 'Start timer',
+            child: IconButton(
+              icon: Icon(
+                _isTimerRunning ? Icons.pause_circle_outline_rounded : Icons.play_circle_outline_rounded,
+                color: Colors.black54,
+              ),
+              onPressed: _toggleTimer,
+            ),
           ),
-          IconButton(
-            icon: Icon(_showTimer ? Icons.timer_off : Icons.timer),
-            onPressed: () => setState(() => _showTimer = !_showTimer),
-            tooltip: _showTimer ? 'Hide Timer' : 'Show Timer',
+          Tooltip(
+            message: _showTimer ? 'Hide timer' : 'Show timer',
+            child: IconButton(
+              icon: Icon(
+                _showTimer ? Icons.timer_off_rounded : Icons.timer_rounded,
+                color: Colors.black54,
+              ),
+              onPressed: () => setState(() => _showTimer = !_showTimer),
+            ),
           ),
-          IconButton(
-            icon: Icon(_showSolution ? Icons.visibility_off : Icons.visibility),
-            onPressed: () => setState(() => _showSolution = !_showSolution),
-            tooltip: 'Toggle Solution',
+          Tooltip(
+            message: _showSolution ? 'Hide solution' : 'Show solution',
+            child: IconButton(
+              icon: Icon(
+                _showSolution ? Icons.lightbulb_rounded : Icons.lightbulb_outline_rounded,
+                color: _showSolution ? Colors.amber : Colors.black54,
+              ),
+              onPressed: () => setState(() => _showSolution = !_showSolution),
+            ),
           ),
-          IconButton(
-            icon: Icon(Icons.refresh),
-            onPressed: _loadNewBoard,
-            tooltip: 'New Board',
+          Tooltip(
+            message: 'New puzzle',
+            child: IconButton(
+              icon: Icon(Icons.casino_rounded, color: Colors.black54),
+              onPressed: _loadNewBoard,
+            ),
           ),
         ],
       ),
@@ -1127,100 +1199,144 @@ class _QueensGameScreenState extends State<QueensGameScreen> {
               children: [
                 _buildRulesDisplay(),
                 if (_errorMessage != null)
-                  Padding(
-                    padding: const EdgeInsets.all(16.0),
+                  Container(
+                    margin: const EdgeInsets.all(16.0),
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.red[100],
+                      borderRadius: BorderRadius.circular(12),
+                    ),
                     child: Text(
                       _errorMessage!,
                       style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.red,
+                        fontSize: 16,
+                        color: Colors.red[900],
                       ),
                     ),
                   ),
                 if (_hasWon)
-                  Padding(
-                    padding: const EdgeInsets.all(16.0),
-                    child: Text(
-                      'Congratulations! You solved the puzzle!',
-                      style: TextStyle(
-                        fontSize: 24,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.green,
+                  Container(
+                    margin: const EdgeInsets.all(16.0),
+                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [Colors.green[300]!, Colors.green[400]!],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
                       ),
+                      borderRadius: BorderRadius.circular(16),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.green[200]!,
+                          blurRadius: 8,
+                          offset: Offset(0, 4),
+                        ),
+                      ],
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.emoji_events_rounded, color: Colors.white, size: 28),
+                        SizedBox(width: 12),
+                        Text(
+                          'Puzzle Solved!',
+                          style: TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 Expanded(
                   child: Center(
-                    child: AspectRatio(
-                      aspectRatio: 1,
-                      child: LayoutBuilder(
-                        builder: (context, constraints) {
-                          return GestureDetector(
-                            onPanStart: (details) => _handleDragStart(details, context, constraints),
-                            onPanUpdate: (details) => _handleDragUpdate(details, context, constraints),
-                            onPanEnd: _handleDragEnd,
-                            child: ColorFiltered(
-                              colorFilter: ColorFilter.mode(
-                                _hasWon ? Colors.grey : Colors.transparent,
-                                BlendMode.saturation,
-                              ),
-                              child: GridView.builder(
-                                physics: NeverScrollableScrollPhysics(),
-                                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                                  crossAxisCount: gridSize,
-                                ),
-                                itemCount: gridSize * gridSize,
-                                itemBuilder: (context, index) {
-                                  final int row = index ~/ gridSize;
-                                  final int col = index % gridSize;
-                                  final Color cellColor = colorRegions[row][col];
-                                  final CellState state = _getCellState(row, col);
-                                  final bool isError = _errorCells.contains(_getCellKey(row, col));
+                    child: Container(
+                      margin: const EdgeInsets.all(16.0),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(16),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.1),
+                            blurRadius: 10,
+                            offset: Offset(0, 4),
+                          ),
+                        ],
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(16.0),
+                        child: AspectRatio(
+                          aspectRatio: 1,
+                          child: LayoutBuilder(
+                            builder: (context, constraints) {
+                              return GestureDetector(
+                                onPanStart: (details) => _handleDragStart(details, context, constraints),
+                                onPanUpdate: (details) => _handleDragUpdate(details, context, constraints),
+                                onPanEnd: _handleDragEnd,
+                                child: ColorFiltered(
+                                  colorFilter: ColorFilter.mode(
+                                    _hasWon ? Colors.grey : Colors.transparent,
+                                    BlendMode.saturation,
+                                  ),
+                                  child: GridView.builder(
+                                    physics: NeverScrollableScrollPhysics(),
+                                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                                      crossAxisCount: gridSize,
+                                    ),
+                                    itemCount: gridSize * gridSize,
+                                    itemBuilder: (context, index) {
+                                      final int row = index ~/ gridSize;
+                                      final int col = index % gridSize;
+                                      final Color cellColor = colorRegions[row][col];
+                                      final CellState state = _getCellState(row, col);
+                                      final bool isError = _errorCells.contains(_getCellKey(row, col));
 
-                                  return GestureDetector(
-                                    onTap: () => toggleCell(row, col),
-                                    child: Container(
-                                      decoration: BoxDecoration(
-                                        color: cellColor == Colors.transparent ? 
-                                          cellColor : 
-                                          cellColor.withAlpha((0.3 * 255).round()),
-                                        gradient: isError ? LinearGradient(
-                                          begin: Alignment.topLeft,
-                                          end: Alignment.bottomRight,
-                                          colors: [Colors.red.withOpacity(0.3), Colors.transparent],
-                                          stops: [0.4, 0.6],
-                                          tileMode: TileMode.repeated,
-                                        ) : null,
-                                        border: Border(
-                                          top: BorderSide(
-                                            color: Colors.black,
-                                            width: _shouldDrawBorder(row, col, 0) ? 1.0 : 0.0,
+                                      return GestureDetector(
+                                        onTap: () => toggleCell(row, col),
+                                        child: Container(
+                                          decoration: BoxDecoration(
+                                            color: cellColor == Colors.transparent ? 
+                                              cellColor : 
+                                              cellColor.withAlpha((0.3 * 255).round()),
+                                            gradient: isError ? LinearGradient(
+                                              begin: Alignment.topLeft,
+                                              end: Alignment.bottomRight,
+                                              colors: [Colors.red.withOpacity(0.3), Colors.transparent],
+                                              stops: [0.4, 0.6],
+                                              tileMode: TileMode.repeated,
+                                            ) : null,
+                                            border: Border(
+                                              top: BorderSide(
+                                                color: Colors.black,
+                                                width: _shouldDrawBorder(row, col, 0) ? 1.0 : 0.0,
+                                              ),
+                                              right: BorderSide(
+                                                color: Colors.black,
+                                                width: _shouldDrawBorder(row, col, 1) ? 1.0 : 0.0,
+                                              ),
+                                              bottom: BorderSide(
+                                                color: Colors.black,
+                                                width: _shouldDrawBorder(row, col, 2) ? 1.0 : 0.0,
+                                              ),
+                                              left: BorderSide(
+                                                color: Colors.black,
+                                                width: _shouldDrawBorder(row, col, 3) ? 1.0 : 0.0,
+                                              ),
+                                            ),
                                           ),
-                                          right: BorderSide(
-                                            color: Colors.black,
-                                            width: _shouldDrawBorder(row, col, 1) ? 1.0 : 0.0,
-                                          ),
-                                          bottom: BorderSide(
-                                            color: Colors.black,
-                                            width: _shouldDrawBorder(row, col, 2) ? 1.0 : 0.0,
-                                          ),
-                                          left: BorderSide(
-                                            color: Colors.black,
-                                            width: _shouldDrawBorder(row, col, 3) ? 1.0 : 0.0,
+                                          child: Center(
+                                            child: _buildCellContent(state),
                                           ),
                                         ),
-                                      ),
-                                      child: Center(
-                                        child: _buildCellContent(state),
-                                      ),
-                                    ),
-                                  );
-                                },
-                              ),
-                            ),
-                          );
-                        },
+                                      );
+                                    },
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
                       ),
                     ),
                   ),
