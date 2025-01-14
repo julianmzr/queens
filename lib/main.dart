@@ -107,14 +107,14 @@ class BoardStorage {
   ];
 
   static final List<Color> _colors = [
-    Colors.red,
-    Colors.blue,
-    Colors.green,
-    Colors.purple,
-    Colors.orange,
-    Colors.yellow,
-    Colors.pink,
-    Colors.teal,
+    Colors.red[500]!,
+    Colors.blue[500]!,
+    Colors.green[500]!,
+    Colors.purple[500]!,
+    Colors.orange[500]!,
+    Colors.amber[500]!,
+    Colors.pink[500]!,
+    Colors.teal[500]!,
   ];
 
   static Board getRandomBoard() {
@@ -247,29 +247,6 @@ class BoardStorage {
     return false;
   }
 
-  static void _growConnectedRegion(List<List<Color>> regions, int row, int col, Color color) {
-    if (row < 0 || row >= 8 || col < 0 || col >= 8 || regions[row][col] != Colors.transparent) {
-      return;
-    }
-
-    regions[row][col] = color;
-    
-    // Get all possible directions
-    List<List<int>> directions = [[-1, 0], [1, 0], [0, -1], [0, 1]];
-    directions.shuffle();
-
-    // Try each direction randomly
-    for (var dir in directions) {
-      int newRow = row + dir[0];
-      int newCol = col + dir[1];
-      
-      // Only grow with 50% chance to create more interesting shapes
-      if (Random().nextBool()) {
-        _growConnectedRegion(regions, newRow, newCol, color);
-      }
-    }
-  }
-
   static Color? _findAdjacentColor(List<List<Color>> regions, int row, int col) {
     List<List<int>> directions = [[-1, 0], [1, 0], [0, -1], [0, 1]];
     List<Color> adjacentColors = [];
@@ -338,10 +315,9 @@ class GameAction {
   GameAction(this.previousStates, this.newStates);
 }
 
-class _QueensGameScreenState extends State<QueensGameScreen> {
+class _QueensGameScreenState extends State<QueensGameScreen> with SingleTickerProviderStateMixin {
   final int gridSize = 8;
   final Map<String, CellState> cellStates = {};
-  bool _isGenerating = false;
   bool _showSolution = false;
   bool _hasWon = false;
   List<List<int>>? _solution;
@@ -358,41 +334,326 @@ class _QueensGameScreenState extends State<QueensGameScreen> {
   final List<GameAction> _actionHistory = [];
   Map<String, CellState> _currentDragChanges = {};
   Map<String, CellState> _dragInitialStates = {};
+  bool _isDarkMode = false;
+  late AnimationController _themeController;
+  late Animation<double> _rotationAnimation;
+  late Animation<double> _scaleAnimation;
 
   @override
   void initState() {
     super.initState();
-    // First load the board
-    final board = BoardStorage.getRandomBoard();
-    setState(() {
-      colorRegions = board.colorRegions;
-      _solution = board.solution;
-      _hasWon = false;
-      cellStates.clear();
-      _elapsedTime = Duration.zero;
-      _isTimerRunning = false;
-    });
+    _themeController = AnimationController(
+      duration: Duration(milliseconds: 500),
+      vsync: this,
+    );
     
-    // Then start the timer after the board is loaded
+    _rotationAnimation = Tween<double>(
+      begin: 0,
+      end: 180,
+    ).animate(CurvedAnimation(
+      parent: _themeController,
+      curve: Curves.easeInOut,
+    ));
+    
+    _scaleAnimation = TweenSequence<double>([
+      TweenSequenceItem(
+        tween: Tween<double>(begin: 1.0, end: 0.5)
+            .chain(CurveTween(curve: Curves.easeOut)),
+        weight: 50,
+      ),
+      TweenSequenceItem(
+        tween: Tween<double>(begin: 0.5, end: 1.0)
+            .chain(CurveTween(curve: Curves.easeIn)),
+        weight: 50,
+      ),
+    ]).animate(_themeController);
+
+    final board = BoardStorage.getRandomBoard();
+    colorRegions = board.colorRegions;
+    _solution = board.solution;
     _toggleTimer();
   }
 
-  void _loadNewBoard() {
-    final board = BoardStorage.getRandomBoard();
+  void _toggleTheme() {
     setState(() {
-      colorRegions = board.colorRegions;
-      _solution = board.solution;
-      _hasWon = false;
-      cellStates.clear();
-      _elapsedTime = Duration.zero;
-      
-      // Cancel existing timer
-      _gameTimer?.cancel();
-      _isTimerRunning = false;
+      _isDarkMode = !_isDarkMode;
+      if (_isDarkMode) {
+        _themeController.forward();
+      } else {
+        _themeController.reverse();
+      }
     });
-    
-    // Start timer after setState is complete
-    _toggleTimer();
+  }
+
+  Color get backgroundColor => _isDarkMode ? Colors.grey[900]! : Colors.grey[50]!;
+  Color get surfaceColor => _isDarkMode ? Colors.grey[850]! : Colors.white;
+  Color get borderColor => _isDarkMode ? Colors.white.withAlpha(192) : Colors.black.withAlpha(192);
+  Color get iconColor => _isDarkMode ? Colors.white : Colors.black87;
+  Color get textColor => _isDarkMode ? Colors.white : Colors.black87;
+  Color get timerBackgroundColor => _isDarkMode ? Colors.grey[800]! : Colors.grey[200]!;
+
+  @override
+  void dispose() {
+    _themeController.dispose();
+    _gameTimer?.cancel();
+    _errorTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: backgroundColor,
+      appBar: AppBar(
+        backgroundColor: surfaceColor,
+        elevation: 0,
+        title: _showTimer ? Container(
+          padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          decoration: BoxDecoration(
+            color: timerBackgroundColor,
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Text(
+            _formatDuration(_elapsedTime),
+            style: TextStyle(
+              color: textColor,
+              fontWeight: FontWeight.w500,
+              fontSize: 18,
+            ),
+          ),
+        ) : null,
+        actions: [
+          AnimatedBuilder(
+            animation: _themeController,
+            builder: (context, child) {
+              return Transform.scale(
+                scale: _scaleAnimation.value,
+                child: Transform.rotate(
+                  angle: _rotationAnimation.value * 3.14159 / 180,
+                  child: IconButton(
+                    icon: Icon(
+                      _isDarkMode ? Icons.light_mode_rounded : Icons.dark_mode_rounded,
+                      color: iconColor,
+                    ),
+                    onPressed: _toggleTheme,
+                    tooltip: _isDarkMode ? 'Switch to light mode' : 'Switch to dark mode',
+                  ),
+                ),
+              );
+            },
+          ),
+          Tooltip(
+            message: 'Undo last move',
+            child: IconButton(
+              icon: Icon(Icons.undo_rounded, color: iconColor),
+              onPressed: _actionHistory.isEmpty ? null : _undo,
+            ),
+          ),
+          Tooltip(
+            message: 'Clear all pieces',
+            child: IconButton(
+              icon: Icon(Icons.delete_outline_rounded, color: iconColor),
+              onPressed: cellStates.isEmpty ? null : _clearBoard,
+            ),
+          ),
+          Tooltip(
+            message: _isTimerRunning ? 'Pause timer' : 'Start timer',
+            child: IconButton(
+              icon: Icon(
+                _isTimerRunning ? Icons.pause_circle_outline_rounded : Icons.play_circle_outline_rounded,
+                color: iconColor,
+              ),
+              onPressed: _toggleTimer,
+            ),
+          ),
+          Tooltip(
+            message: _showTimer ? 'Hide timer' : 'Show timer',
+            child: IconButton(
+              icon: Icon(
+                _showTimer ? Icons.timer_off_rounded : Icons.timer_rounded,
+                color: iconColor,
+              ),
+              onPressed: () => setState(() => _showTimer = !_showTimer),
+            ),
+          ),
+          Tooltip(
+            message: _showSolution ? 'Hide solution' : 'Show solution',
+            child: IconButton(
+              icon: Icon(
+                _showSolution ? Icons.lightbulb_rounded : Icons.lightbulb_outline_rounded,
+                color: _showSolution ? Colors.amber : iconColor,
+              ),
+              onPressed: () => setState(() => _showSolution = !_showSolution),
+            ),
+          ),
+          Tooltip(
+            message: 'New puzzle',
+            child: IconButton(
+              icon: Icon(Icons.casino_rounded, color: iconColor),
+              onPressed: _loadNewBoard,
+            ),
+          ),
+        ],
+      ),
+      body: Stack(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(8.0),
+            child: Column(
+              children: [
+                _buildRulesDisplay(),
+                if (_errorMessage != null)
+                  Container(
+                    margin: const EdgeInsets.all(16.0),
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.red[100],
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      _errorMessage!,
+                      style: TextStyle(
+                        fontSize: 16,
+                        color: Colors.red[900],
+                      ),
+                    ),
+                  ),
+                if (_hasWon)
+                  Container(
+                    margin: const EdgeInsets.all(16.0),
+                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [Colors.green[300]!, Colors.green[400]!],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      ),
+                      borderRadius: BorderRadius.circular(16),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.green[200]!,
+                          blurRadius: 8,
+                          offset: Offset(0, 4),
+                        ),
+                      ],
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.emoji_events_rounded, color: Colors.white, size: 28),
+                        SizedBox(width: 12),
+                        Text(
+                          'Puzzle Solved!',
+                          style: TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                Expanded(
+                  child: Center(
+                    child: Container(
+                      margin: const EdgeInsets.all(16.0),
+                      decoration: BoxDecoration(
+                        color: surfaceColor,
+                        borderRadius: BorderRadius.circular(16),
+                        boxShadow: [
+                          BoxShadow(
+                            color: (_isDarkMode ? Colors.black : Colors.black.withOpacity(0.1)),
+                            blurRadius: 10,
+                            offset: Offset(0, 4),
+                          ),
+                        ],
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(16.0),
+                        child: AspectRatio(
+                          aspectRatio: 1,
+                          child: LayoutBuilder(
+                            builder: (context, constraints) {
+                              return GestureDetector(
+                                onPanStart: (details) => _handleDragStart(details, context, constraints),
+                                onPanUpdate: (details) => _handleDragUpdate(details, context, constraints),
+                                onPanEnd: _handleDragEnd,
+                                child: ColorFiltered(
+                                  colorFilter: ColorFilter.mode(
+                                    _hasWon ? Colors.grey : Colors.transparent,
+                                    BlendMode.saturation,
+                                  ),
+                                  child: GridView.builder(
+                                    physics: NeverScrollableScrollPhysics(),
+                                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                                      crossAxisCount: gridSize,
+                                    ),
+                                    itemCount: gridSize * gridSize,
+                                    itemBuilder: (context, index) {
+                                      final int row = index ~/ gridSize;
+                                      final int col = index % gridSize;
+                                      final Color cellColor = colorRegions[row][col];
+                                      final CellState state = _getCellState(row, col);
+                                      final bool isError = _errorCells.contains(_getCellKey(row, col));
+
+                                      return GestureDetector(
+                                        onTap: () => toggleCell(row, col),
+                                        child: Container(
+                                          decoration: BoxDecoration(
+                                            color: cellColor == Colors.transparent ? 
+                                              cellColor : 
+                                              cellColor.withAlpha(((_isDarkMode ? 0.8 : 0.6) * 255).round()),
+                                            gradient: isError ? LinearGradient(
+                                              begin: Alignment.topLeft,
+                                              end: Alignment.bottomRight,
+                                              colors: [
+                                                (_isDarkMode ? Colors.red[900]! : Colors.red).withOpacity(0.3),
+                                                Colors.transparent
+                                              ],
+                                              stops: [0.4, 0.6],
+                                              tileMode: TileMode.repeated,
+                                            ) : null,
+                                            border: Border(
+                                              top: BorderSide(
+                                                color: borderColor,
+                                                width: _shouldDrawBorder(row, col, 0) ? 1.5 : 0.0,
+                                              ),
+                                              right: BorderSide(
+                                                color: borderColor,
+                                                width: _shouldDrawBorder(row, col, 1) ? 1.5 : 0.0,
+                                              ),
+                                              bottom: BorderSide(
+                                                color: borderColor,
+                                                width: _shouldDrawBorder(row, col, 2) ? 1.5 : 0.0,
+                                              ),
+                                              left: BorderSide(
+                                                color: borderColor,
+                                                width: _shouldDrawBorder(row, col, 3) ? 1.5 : 0.0,
+                                              ),
+                                            ),
+                                          ),
+                                          child: Center(
+                                            child: _buildCellContent(state),
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   String _getCellKey(int row, int col) => '$row-$col';
@@ -666,7 +927,7 @@ class _QueensGameScreenState extends State<QueensGameScreen> {
         switch (state) {
           case CellState.queen:
             return SvgPicture.string(
-              '''<svg width="32" height="32" viewBox="0 0 24 24" fill="black">
+              '''<svg width="32" height="32" viewBox="0 0 24 24" fill="${_isDarkMode ? 'white' : 'black'}">
                 <path d="M12 2L8 7L3 4L4 10L2 16H22L20 10L21 4L16 7L12 2ZM12 4.5L14.5 7.8L12 10L9.5 7.8L12 4.5ZM6.9 14L8 10.2L10.5 12.5L12 10L13.5 12.5L16 10.2L17.1 14H6.9Z"/>
               </svg>''',
               width: iconSize,
@@ -674,7 +935,7 @@ class _QueensGameScreenState extends State<QueensGameScreen> {
             );
           case CellState.blocked:
             return SvgPicture.string(
-              '''<svg width="32" height="32" viewBox="0 0 24 24" fill="black">
+              '''<svg width="32" height="32" viewBox="0 0 24 24" fill="${_isDarkMode ? 'white' : 'black'}">
                 <path d="M6 6L10 10L6 14L8 16L12 12L16 16L18 14L14 10L18 6L16 4L12 8L8 4L6 6Z"/>
               </svg>''',
               width: iconSize * 0.7,
@@ -699,16 +960,20 @@ class _QueensGameScreenState extends State<QueensGameScreen> {
           return Container(
             padding: EdgeInsets.symmetric(horizontal: 12, vertical: 6),
             decoration: BoxDecoration(
-              color: isViolated ? Colors.red[50] : Colors.white,
+              color: isViolated 
+                ? (_isDarkMode ? Colors.red[900] : Colors.red[50])
+                : surfaceColor,
               borderRadius: BorderRadius.circular(20),
               border: Border.all(
-                color: isViolated ? Colors.red[300]! : Colors.grey[300]!,
+                color: isViolated 
+                  ? (_isDarkMode ? Colors.red[700]! : Colors.red[300]!)
+                  : (_isDarkMode ? Colors.grey[700]! : Colors.grey[300]!),
                 width: 1,
               ),
               boxShadow: [
                 if (isViolated)
                   BoxShadow(
-                    color: Colors.red[100]!.withOpacity(0.5),
+                    color: (_isDarkMode ? Colors.red[900]! : Colors.red[100]!).withOpacity(0.5),
                     blurRadius: 4,
                     offset: Offset(0, 2),
                   )
@@ -719,7 +984,9 @@ class _QueensGameScreenState extends State<QueensGameScreen> {
               children: [
                 Icon(
                   _getRuleIcon(rule),
-                  color: isViolated ? Colors.red[700] : Colors.grey[700],
+                  color: isViolated 
+                    ? (_isDarkMode ? Colors.red[300] : Colors.red[700])
+                    : (_isDarkMode ? Colors.grey[300] : Colors.grey[700]),
                   size: 18,
                 ),
                 const SizedBox(width: 6),
@@ -727,7 +994,9 @@ class _QueensGameScreenState extends State<QueensGameScreen> {
                   _getRuleShortText(rule),
                   style: TextStyle(
                     fontSize: 13,
-                    color: isViolated ? Colors.red[900] : Colors.grey[850],
+                    color: isViolated 
+                      ? (_isDarkMode ? Colors.red[300] : Colors.red[900])
+                      : textColor,
                     fontWeight: isViolated ? FontWeight.w600 : FontWeight.w500,
                   ),
                 ),
@@ -1115,245 +1384,22 @@ class _QueensGameScreenState extends State<QueensGameScreen> {
     });
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.grey[100],
-      appBar: AppBar(
-        backgroundColor: Colors.white,
-        elevation: 0,
-        title: _showTimer ? Container(
-          padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          decoration: BoxDecoration(
-            color: Colors.grey[200],
-            borderRadius: BorderRadius.circular(20),
-          ),
-          child: Text(
-            _formatDuration(_elapsedTime),
-            style: TextStyle(
-              color: Colors.black87,
-              fontWeight: FontWeight.w500,
-              fontSize: 18,
-            ),
-          ),
-        ) : null,
-        actions: [
-          Tooltip(
-            message: 'Undo last move',
-            child: IconButton(
-              icon: Icon(Icons.undo_rounded, color: Colors.black54),
-              onPressed: _actionHistory.isEmpty ? null : _undo,
-            ),
-          ),
-          Tooltip(
-            message: 'Clear all pieces',
-            child: IconButton(
-              icon: Icon(Icons.delete_outline_rounded, color: Colors.black54),
-              onPressed: cellStates.isEmpty ? null : _clearBoard,
-            ),
-          ),
-          Tooltip(
-            message: _isTimerRunning ? 'Pause timer' : 'Start timer',
-            child: IconButton(
-              icon: Icon(
-                _isTimerRunning ? Icons.pause_circle_outline_rounded : Icons.play_circle_outline_rounded,
-                color: Colors.black54,
-              ),
-              onPressed: _toggleTimer,
-            ),
-          ),
-          Tooltip(
-            message: _showTimer ? 'Hide timer' : 'Show timer',
-            child: IconButton(
-              icon: Icon(
-                _showTimer ? Icons.timer_off_rounded : Icons.timer_rounded,
-                color: Colors.black54,
-              ),
-              onPressed: () => setState(() => _showTimer = !_showTimer),
-            ),
-          ),
-          Tooltip(
-            message: _showSolution ? 'Hide solution' : 'Show solution',
-            child: IconButton(
-              icon: Icon(
-                _showSolution ? Icons.lightbulb_rounded : Icons.lightbulb_outline_rounded,
-                color: _showSolution ? Colors.amber : Colors.black54,
-              ),
-              onPressed: () => setState(() => _showSolution = !_showSolution),
-            ),
-          ),
-          Tooltip(
-            message: 'New puzzle',
-            child: IconButton(
-              icon: Icon(Icons.casino_rounded, color: Colors.black54),
-              onPressed: _loadNewBoard,
-            ),
-          ),
-        ],
-      ),
-      body: Stack(
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(8.0),
-            child: Column(
-              children: [
-                _buildRulesDisplay(),
-                if (_errorMessage != null)
-                  Container(
-                    margin: const EdgeInsets.all(16.0),
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: Colors.red[100],
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Text(
-                      _errorMessage!,
-                      style: TextStyle(
-                        fontSize: 16,
-                        color: Colors.red[900],
-                      ),
-                    ),
-                  ),
-                if (_hasWon)
-                  Container(
-                    margin: const EdgeInsets.all(16.0),
-                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        colors: [Colors.green[300]!, Colors.green[400]!],
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                      ),
-                      borderRadius: BorderRadius.circular(16),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.green[200]!,
-                          blurRadius: 8,
-                          offset: Offset(0, 4),
-                        ),
-                      ],
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.emoji_events_rounded, color: Colors.white, size: 28),
-                        SizedBox(width: 12),
-                        Text(
-                          'Puzzle Solved!',
-                          style: TextStyle(
-                            fontSize: 20,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.white,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                Expanded(
-                  child: Center(
-                    child: Container(
-                      margin: const EdgeInsets.all(16.0),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(16),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withOpacity(0.1),
-                            blurRadius: 10,
-                            offset: Offset(0, 4),
-                          ),
-                        ],
-                      ),
-                      child: Padding(
-                        padding: const EdgeInsets.all(16.0),
-                        child: AspectRatio(
-                          aspectRatio: 1,
-                          child: LayoutBuilder(
-                            builder: (context, constraints) {
-                              return GestureDetector(
-                                onPanStart: (details) => _handleDragStart(details, context, constraints),
-                                onPanUpdate: (details) => _handleDragUpdate(details, context, constraints),
-                                onPanEnd: _handleDragEnd,
-                                child: ColorFiltered(
-                                  colorFilter: ColorFilter.mode(
-                                    _hasWon ? Colors.grey : Colors.transparent,
-                                    BlendMode.saturation,
-                                  ),
-                                  child: GridView.builder(
-                                    physics: NeverScrollableScrollPhysics(),
-                                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                                      crossAxisCount: gridSize,
-                                    ),
-                                    itemCount: gridSize * gridSize,
-                                    itemBuilder: (context, index) {
-                                      final int row = index ~/ gridSize;
-                                      final int col = index % gridSize;
-                                      final Color cellColor = colorRegions[row][col];
-                                      final CellState state = _getCellState(row, col);
-                                      final bool isError = _errorCells.contains(_getCellKey(row, col));
-
-                                      return GestureDetector(
-                                        onTap: () => toggleCell(row, col),
-                                        child: Container(
-                                          decoration: BoxDecoration(
-                                            color: cellColor == Colors.transparent ? 
-                                              cellColor : 
-                                              cellColor.withAlpha((0.3 * 255).round()),
-                                            gradient: isError ? LinearGradient(
-                                              begin: Alignment.topLeft,
-                                              end: Alignment.bottomRight,
-                                              colors: [Colors.red.withOpacity(0.3), Colors.transparent],
-                                              stops: [0.4, 0.6],
-                                              tileMode: TileMode.repeated,
-                                            ) : null,
-                                            border: Border(
-                                              top: BorderSide(
-                                                color: Colors.black,
-                                                width: _shouldDrawBorder(row, col, 0) ? 1.0 : 0.0,
-                                              ),
-                                              right: BorderSide(
-                                                color: Colors.black,
-                                                width: _shouldDrawBorder(row, col, 1) ? 1.0 : 0.0,
-                                              ),
-                                              bottom: BorderSide(
-                                                color: Colors.black,
-                                                width: _shouldDrawBorder(row, col, 2) ? 1.0 : 0.0,
-                                              ),
-                                              left: BorderSide(
-                                                color: Colors.black,
-                                                width: _shouldDrawBorder(row, col, 3) ? 1.0 : 0.0,
-                                              ),
-                                            ),
-                                          ),
-                                          child: Center(
-                                            child: _buildCellContent(state),
-                                          ),
-                                        ),
-                                      );
-                                    },
-                                  ),
-                                ),
-                              );
-                            },
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  @override
-  void dispose() {
-    _gameTimer?.cancel();
-    _errorTimer?.cancel();
-    super.dispose();
+  void _loadNewBoard() {
+    final board = BoardStorage.getRandomBoard();
+    setState(() {
+      colorRegions = board.colorRegions;
+      _solution = board.solution;
+      _hasWon = false;
+      cellStates.clear();
+      _elapsedTime = Duration.zero;
+      
+      // Cancel existing timer
+      _gameTimer?.cancel();
+      _isTimerRunning = false;
+    });
+    
+    // Start timer after setState is complete
+    _toggleTimer();
   }
 }
 
