@@ -260,6 +260,16 @@ class BoardStorage {
   }
 }
 
+enum GameRule {
+  onePerRow('One queen per row'),
+  onePerColumn('One queen per column'),
+  onePerDiagonal('One queen per diagonal'),
+  onePerRegion('One queen per color region');
+
+  final String description;
+  const GameRule(this.description);
+}
+
 void main() {
   runApp(const QueensGameApp());
 }
@@ -292,6 +302,14 @@ enum CellState {
   queen,
 }
 
+// First, add this class to represent user actions
+class GameAction {
+  final Map<String, CellState> previousStates;
+  final Map<String, CellState> newStates;
+
+  GameAction(this.previousStates, this.newStates);
+}
+
 class _QueensGameScreenState extends State<QueensGameScreen> {
   final int gridSize = 8;
   final Map<String, CellState> cellStates = {};
@@ -303,11 +321,32 @@ class _QueensGameScreenState extends State<QueensGameScreen> {
   String? _errorMessage;
   Set<String> _errorCells = {};
   Timer? _errorTimer;
+  Set<GameRule> _violatedRules = {};
+  Timer? _gameTimer;
+  Duration _elapsedTime = Duration.zero;
+  bool _showTimer = true;
+  bool _isTimerRunning = false;
+  CellState? _currentDragOperation;
+  final List<GameAction> _actionHistory = [];
+  Map<String, CellState> _currentDragChanges = {};
+  Map<String, CellState> _dragInitialStates = {};
 
   @override
   void initState() {
     super.initState();
-    _loadNewBoard();
+    // First load the board
+    final board = BoardStorage.getRandomBoard();
+    setState(() {
+      colorRegions = board.colorRegions;
+      _solution = board.solution;
+      _hasWon = false;
+      cellStates.clear();
+      _elapsedTime = Duration.zero;
+      _isTimerRunning = false;
+    });
+    
+    // Then start the timer after the board is loaded
+    _toggleTimer();
   }
 
   void _loadNewBoard() {
@@ -317,7 +356,15 @@ class _QueensGameScreenState extends State<QueensGameScreen> {
       _solution = board.solution;
       _hasWon = false;
       cellStates.clear();
+      _elapsedTime = Duration.zero;
+      
+      // Cancel existing timer
+      _gameTimer?.cancel();
+      _isTimerRunning = false;
     });
+    
+    // Start timer after setState is complete
+    _toggleTimer();
   }
 
   String _getCellKey(int row, int col) => '$row-$col';
@@ -348,24 +395,41 @@ class _QueensGameScreenState extends State<QueensGameScreen> {
   }
 
   void toggleCell(int row, int col) {
-    if (_hasWon) return; // Prevent moves after winning
+    if (_hasWon) return;
+    
+    final key = _getCellKey(row, col);
+    final currentState = cellStates[key] ?? CellState.empty;
+    CellState newState;
+    
+    switch (currentState) {
+      case CellState.empty:
+        newState = CellState.blocked;
+        break;
+      case CellState.blocked:
+        newState = CellState.queen;
+        break;
+      case CellState.queen:
+        newState = CellState.empty;
+        break;
+    }
+
+    // Record the action before making the change
+    _recordAction({key: newState});
     
     setState(() {
-      final key = _getCellKey(row, col);
-      final currentState = cellStates[key] ?? CellState.empty;
+      cellStates[key] = newState;
       
-      switch (currentState) {
-        case CellState.empty:
-          cellStates[key] = CellState.blocked;
-          break;
+      switch (newState) {
         case CellState.blocked:
-          cellStates[key] = CellState.queen;
-          // Check for rule violations before checking win
+          _checkBlockedRegions(row, col);
+          break;
+        case CellState.queen:
+          _clearViolationsIfResolved();
           _checkRuleViolations(row, col);
           _checkWinCondition();
           break;
-        case CellState.queen:
-          cellStates[key] = CellState.empty;
+        case CellState.empty:
+          _checkAllQueensViolations();
           break;
       }
     });
@@ -373,7 +437,7 @@ class _QueensGameScreenState extends State<QueensGameScreen> {
 
   void _checkRuleViolations(int newQueenRow, int newQueenCol) {
     Set<String> errorCells = {};
-    String? errorMessage;
+    _violatedRules = {}; // Reset violated rules
 
     // Get all queen positions
     List<List<int>> queens = [];
@@ -391,7 +455,7 @@ class _QueensGameScreenState extends State<QueensGameScreen> {
 
     // Check row violation
     if (queens.where((q) => q[0] == newQueenRow).length > 1) {
-      errorMessage = 'Multiple queens in the same row!';
+      _violatedRules.add(GameRule.onePerRow);
       for (int col = 0; col < gridSize; col++) {
         errorCells.add(_getCellKey(newQueenRow, col));
       }
@@ -399,9 +463,31 @@ class _QueensGameScreenState extends State<QueensGameScreen> {
 
     // Check column violation
     if (queens.where((q) => q[1] == newQueenCol).length > 1) {
-      errorMessage = 'Multiple queens in the same column!';
+      _violatedRules.add(GameRule.onePerColumn);
       for (int row = 0; row < gridSize; row++) {
         errorCells.add(_getCellKey(row, newQueenCol));
+      }
+    }
+
+    // Check diagonal violations
+    for (var queen in queens) {
+      if (queen[0] == newQueenRow && queen[1] == newQueenCol) continue;
+      
+      if ((queen[0] - newQueenRow).abs() == (queen[1] - newQueenCol).abs()) {
+        _violatedRules.add(GameRule.onePerDiagonal);
+        
+        // Highlight the diagonal path
+        int rowDiff = queen[0] - newQueenRow;
+        int colDiff = queen[1] - newQueenCol;
+        int steps = rowDiff.abs();
+        int rowStep = rowDiff ~/ steps;
+        int colStep = colDiff ~/ steps;
+        
+        for (int i = 0; i <= steps; i++) {
+          int r = newQueenRow + (i * rowStep);
+          int c = newQueenCol + (i * colStep);
+          errorCells.add(_getCellKey(r, c));
+        }
       }
     }
 
@@ -409,8 +495,7 @@ class _QueensGameScreenState extends State<QueensGameScreen> {
     Color newQueenColor = colorRegions[newQueenRow][newQueenCol];
     int queensInSameColor = queensByColor[newQueenColor]?.length ?? 0;
     if (queensInSameColor > 1) {
-      errorMessage = 'Multiple queens in the same color region!';
-      // Add all cells of the same color
+      _violatedRules.add(GameRule.onePerRegion);
       for (int row = 0; row < gridSize; row++) {
         for (int col = 0; col < gridSize; col++) {
           if (colorRegions[row][col] == newQueenColor) {
@@ -420,8 +505,10 @@ class _QueensGameScreenState extends State<QueensGameScreen> {
       }
     }
 
-    if (errorMessage != null) {
-      _showError(errorMessage, errorCells);
+    if (_violatedRules.isNotEmpty) {
+      setState(() {
+        _errorCells = errorCells;
+      });
     }
   }
 
@@ -449,13 +536,14 @@ class _QueensGameScreenState extends State<QueensGameScreen> {
         queensByColor.values.every((list) => list.length == 1);
     if (!isValidQueenDistribution) return;
 
-    // Check if all queens are valid (no same row/column)
+    // Check if all queens are valid (no same row/column/diagonal)
     for (int i = 0; i < queens.length; i++) {
       for (int j = i + 1; j < queens.length; j++) {
         var queen1 = queens[i];
         var queen2 = queens[j];
         if (queen1[0] == queen2[0] || // Same row
-            queen1[1] == queen2[1]) { // Same column
+            queen1[1] == queen2[1] || // Same column
+            (queen1[0] - queen2[0]).abs() == (queen1[1] - queen2[1]).abs()) { // Same diagonal
           return;
         }
       }
@@ -467,8 +555,33 @@ class _QueensGameScreenState extends State<QueensGameScreen> {
     });
   }
 
+  void _handleDragStart(DragStartDetails details, BuildContext context, BoxConstraints constraints) {
+    if (_hasWon) return;
+
+    final RenderBox box = context.findRenderObject() as RenderBox;
+    final localPosition = box.globalToLocal(details.globalPosition);
+    
+    final cellWidth = constraints.maxWidth / gridSize;
+    final cellHeight = constraints.maxHeight / gridSize;
+    
+    final row = (localPosition.dy / cellHeight).floor();
+    final col = (localPosition.dx / cellWidth).floor();
+    
+    if (row >= 0 && row < gridSize && col >= 0 && col < gridSize) {
+      final currentState = _getCellState(row, col);
+      if (currentState != CellState.queen) {
+        _currentDragChanges = {};
+        _dragInitialStates = {}; // Reset initial states
+        setState(() {
+          _currentDragOperation = currentState == CellState.empty ? 
+              CellState.blocked : CellState.empty;
+        });
+      }
+    }
+  }
+
   void _handleDragUpdate(DragUpdateDetails details, BuildContext context, BoxConstraints constraints) {
-    if (_hasWon) return; // Prevent moves after winning
+    if (_hasWon || _currentDragOperation == null) return;
     
     final RenderBox box = context.findRenderObject() as RenderBox;
     final localPosition = box.globalToLocal(details.globalPosition);
@@ -482,11 +595,38 @@ class _QueensGameScreenState extends State<QueensGameScreen> {
     if (row >= 0 && row < gridSize && col >= 0 && col < gridSize) {
       final currentState = _getCellState(row, col);
       if (currentState != CellState.queen) {
-        setState(() {
-          cellStates[_getCellKey(row, col)] = CellState.blocked;
-        });
+        final key = _getCellKey(row, col);
+        if (cellStates[key] != _currentDragOperation) {
+          // Store the initial state if we haven't seen this cell before
+          if (!_dragInitialStates.containsKey(key)) {
+            _dragInitialStates[key] = cellStates[key] ?? CellState.empty;
+          }
+          
+          _currentDragChanges[key] = _currentDragOperation!;
+          
+          setState(() {
+            cellStates[key] = _currentDragOperation!;
+            if (_currentDragOperation == CellState.blocked) {
+              _checkBlockedRegions(row, col);
+            } else if (_currentDragOperation == CellState.empty) {
+              _clearViolationsIfResolved();
+            }
+          });
+        }
       }
     }
+  }
+
+  void _handleDragEnd(DragEndDetails details) {
+    if (_currentDragChanges.isNotEmpty) {
+      // Create the action with the initial states we collected
+      _actionHistory.add(GameAction(_dragInitialStates, Map.from(_currentDragChanges)));
+      _currentDragChanges = {};
+      _dragInitialStates = {};
+    }
+    setState(() {
+      _currentDragOperation = null;
+    });
   }
 
   Widget _buildCellContent(CellState state) {
@@ -508,11 +648,465 @@ class _QueensGameScreenState extends State<QueensGameScreen> {
     }
   }
 
+  Widget _buildRulesDisplay() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(vertical: 8.0),
+      child: Wrap(
+        alignment: WrapAlignment.center,
+        spacing: 16.0,
+        runSpacing: 8.0,
+        children: GameRule.values.map((rule) {
+          final bool isViolated = _violatedRules.contains(rule);
+          return Container(
+            constraints: BoxConstraints(maxWidth: 200),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  isViolated ? Icons.cancel : Icons.check_circle,
+                  color: isViolated ? Colors.red : Colors.green,
+                  size: 16,
+                ),
+                const SizedBox(width: 4),
+                Flexible(
+                  child: Text(
+                    rule.description,
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: isViolated ? Colors.red : Colors.black87,
+                      fontWeight: isViolated ? FontWeight.bold : FontWeight.normal,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          );
+        }).toList(),
+      ),
+    );
+  }
+
+  // Add this new method to check all queens
+  void _checkAllQueensViolations() {
+    Set<String> errorCells = {};
+    _violatedRules = {}; // Reset violated rules
+
+    // Get all queen positions
+    List<List<int>> queens = [];
+    Map<Color, List<List<int>>> queensByColor = {};
+    
+    for (int row = 0; row < gridSize; row++) {
+      for (int col = 0; col < gridSize; col++) {
+        if (cellStates[_getCellKey(row, col)] == CellState.queen) {
+          queens.add([row, col]);
+          Color color = colorRegions[row][col];
+          queensByColor.putIfAbsent(color, () => []).add([row, col]);
+        }
+      }
+    }
+
+    // Check all queens for violations
+    for (var queen in queens) {
+      // Check row violations
+      if (queens.where((q) => q[0] == queen[0]).length > 1) {
+        _violatedRules.add(GameRule.onePerRow);
+        for (int col = 0; col < gridSize; col++) {
+          errorCells.add(_getCellKey(queen[0], col));
+        }
+      }
+
+      // Check column violations
+      if (queens.where((q) => q[1] == queen[1]).length > 1) {
+        _violatedRules.add(GameRule.onePerColumn);
+        for (int row = 0; row < gridSize; row++) {
+          errorCells.add(_getCellKey(row, queen[1]));
+        }
+      }
+
+      // Check diagonal violations
+      for (var otherQueen in queens) {
+        if (queen == otherQueen) continue;
+        
+        if ((queen[0] - otherQueen[0]).abs() == (queen[1] - otherQueen[1]).abs()) {
+          _violatedRules.add(GameRule.onePerDiagonal);
+          
+          // Highlight the diagonal path
+          int rowDiff = otherQueen[0] - queen[0];
+          int colDiff = otherQueen[1] - queen[1];
+          int steps = rowDiff.abs();
+          int rowStep = rowDiff ~/ steps;
+          int colStep = colDiff ~/ steps;
+          
+          for (int i = 0; i <= steps; i++) {
+            int r = queen[0] + (i * rowStep);
+            int c = queen[1] + (i * colStep);
+            errorCells.add(_getCellKey(r, c));
+          }
+        }
+      }
+
+      // Check color region violations
+      Color queenColor = colorRegions[queen[0]][queen[1]];
+      if (queensByColor[queenColor]!.length > 1) {
+        _violatedRules.add(GameRule.onePerRegion);
+        for (int row = 0; row < gridSize; row++) {
+          for (int col = 0; col < gridSize; col++) {
+            if (colorRegions[row][col] == queenColor) {
+              errorCells.add(_getCellKey(row, col));
+            }
+          }
+        }
+      }
+    }
+
+    setState(() {
+      _errorCells = errorCells;
+    });
+  }
+
+  bool _shouldDrawBorder(int row, int col, int direction) {
+    // direction: 0 = top, 1 = right, 2 = bottom, 3 = left
+    if (row < 0 || row >= gridSize || col < 0 || col >= gridSize) return true;
+    
+    switch (direction) {
+      case 0: // top
+        return row == 0 || colorRegions[row][col] != colorRegions[row - 1][col];
+      case 1: // right
+        return col == gridSize - 1 || colorRegions[row][col] != colorRegions[row][col + 1];
+      case 2: // bottom
+        return row == gridSize - 1 || colorRegions[row][col] != colorRegions[row + 1][col];
+      case 3: // left
+        return col == 0 || colorRegions[row][col] != colorRegions[row][col - 1];
+      default:
+        return false;
+    }
+  }
+
+  void _toggleTimer() {
+    setState(() {
+      if (_isTimerRunning) {
+        _gameTimer?.cancel();
+      } else {
+        _gameTimer = Timer.periodic(Duration(seconds: 1), (timer) {
+          if (!_hasWon) {
+            setState(() {
+              _elapsedTime += Duration(seconds: 1);
+            });
+          } else {
+            timer.cancel();
+          }
+        });
+      }
+      _isTimerRunning = !_isTimerRunning;
+    });
+  }
+
+  String _formatDuration(Duration duration) {
+    String twoDigits(int n) => n.toString().padLeft(2, '0');
+    String minutes = twoDigits(duration.inMinutes.remainder(60));
+    String seconds = twoDigits(duration.inSeconds.remainder(60));
+    return "$minutes:$seconds";
+  }
+
+  // Add this new method to check for fully blocked regions
+  void _checkBlockedRegions(int row, int col) {
+    Set<String> errorCells = {};
+    bool hasViolation = false;
+
+    // Check row
+    bool isRowBlocked = true;
+    for (int c = 0; c < gridSize; c++) {
+      if (_getCellState(row, c) != CellState.blocked) {
+        isRowBlocked = false;
+        break;
+      }
+    }
+    if (isRowBlocked) {
+      hasViolation = true;
+      for (int c = 0; c < gridSize; c++) {
+        errorCells.add(_getCellKey(row, c));
+      }
+    }
+
+    // Check column
+    bool isColBlocked = true;
+    for (int r = 0; r < gridSize; r++) {
+      if (_getCellState(r, col) != CellState.blocked) {
+        isColBlocked = false;
+        break;
+      }
+    }
+    if (isColBlocked) {
+      hasViolation = true;
+      for (int r = 0; r < gridSize; r++) {
+        errorCells.add(_getCellKey(r, col));
+      }
+    }
+
+    // Check diagonals
+    List<List<int>> mainDiagonal = [];
+    List<List<int>> antiDiagonal = [];
+    
+    // Collect cells in both diagonals that contain the placed block
+    for (int i = 0; i < gridSize; i++) {
+      for (int j = 0; j < gridSize; j++) {
+        if ((i - j) == (row - col)) {
+          mainDiagonal.add([i, j]);
+        }
+        if ((i + j) == (row + col)) {
+          antiDiagonal.add([i, j]);
+        }
+      }
+    }
+
+    // Check main diagonal only if it has more than one cell
+    if (mainDiagonal.length > 1) {
+      bool isMainDiagBlocked = mainDiagonal.every(
+        (pos) => _getCellState(pos[0], pos[1]) == CellState.blocked
+      );
+      if (isMainDiagBlocked) {
+        hasViolation = true;
+        for (var pos in mainDiagonal) {
+          errorCells.add(_getCellKey(pos[0], pos[1]));
+        }
+      }
+    }
+
+    // Check anti-diagonal only if it has more than one cell
+    if (antiDiagonal.length > 1) {
+      bool isAntiDiagBlocked = antiDiagonal.every(
+        (pos) => _getCellState(pos[0], pos[1]) == CellState.blocked
+      );
+      if (isAntiDiagBlocked) {
+        hasViolation = true;
+        for (var pos in antiDiagonal) {
+          errorCells.add(_getCellKey(pos[0], pos[1]));
+        }
+      }
+    }
+
+    // Check color region
+    Color regionColor = colorRegions[row][col];
+    bool isRegionBlocked = true;
+    for (int r = 0; r < gridSize; r++) {
+      for (int c = 0; c < gridSize; c++) {
+        if (colorRegions[r][c] == regionColor && 
+            _getCellState(r, c) != CellState.blocked) {
+          isRegionBlocked = false;
+          break;
+        }
+      }
+    }
+    if (isRegionBlocked) {
+      hasViolation = true;
+      for (int r = 0; r < gridSize; r++) {
+        for (int c = 0; c < gridSize; c++) {
+          if (colorRegions[r][c] == regionColor) {
+            errorCells.add(_getCellKey(r, c));
+          }
+        }
+      }
+    }
+
+    if (hasViolation) {
+      setState(() {
+        _errorCells = errorCells;
+        // Mark all rules as violated when a region is fully blocked
+        _violatedRules = Set.from(GameRule.values);
+      });
+    }
+  }
+
+  // Add this new method to check if violations should be cleared
+  void _clearViolationsIfResolved() {
+    // If there are no violations currently shown, no need to check
+    if (_violatedRules.isEmpty) return;
+
+    bool hasBlockedRow = false;
+    bool hasBlockedColumn = false;
+    bool hasBlockedDiagonal = false;
+    bool hasBlockedRegion = false;
+
+    // Check rows
+    for (int row = 0; row < gridSize; row++) {
+      bool isRowBlocked = true;
+      for (int col = 0; col < gridSize; col++) {
+        if (_getCellState(row, col) != CellState.blocked) {
+          isRowBlocked = false;
+          break;
+        }
+      }
+      if (isRowBlocked) {
+        hasBlockedRow = true;
+        break;
+      }
+    }
+
+    // Check columns
+    for (int col = 0; col < gridSize; col++) {
+      bool isColBlocked = true;
+      for (int row = 0; row < gridSize; row++) {
+        if (_getCellState(row, col) != CellState.blocked) {
+          isColBlocked = false;
+          break;
+        }
+      }
+      if (isColBlocked) {
+        hasBlockedColumn = true;
+        break;
+      }
+    }
+
+    // Check diagonals
+    for (int startRow = 0; startRow < gridSize; startRow++) {
+      for (int startCol = 0; startCol < gridSize; startCol++) {
+        // Check main diagonal starting from this position
+        List<List<int>> mainDiagonal = [];
+        List<List<int>> antiDiagonal = [];
+        
+        for (int i = 0; i < gridSize; i++) {
+          for (int j = 0; j < gridSize; j++) {
+            if ((i - j) == (startRow - startCol)) {
+              mainDiagonal.add([i, j]);
+            }
+            if ((i + j) == (startRow + startCol)) {
+              antiDiagonal.add([i, j]);
+            }
+          }
+        }
+
+        if (mainDiagonal.length > 1 && mainDiagonal.every(
+          (pos) => _getCellState(pos[0], pos[1]) == CellState.blocked
+        )) {
+          hasBlockedDiagonal = true;
+          break;
+        }
+
+        if (antiDiagonal.length > 1 && antiDiagonal.every(
+          (pos) => _getCellState(pos[0], pos[1]) == CellState.blocked
+        )) {
+          hasBlockedDiagonal = true;
+          break;
+        }
+      }
+      if (hasBlockedDiagonal) break;
+    }
+
+    // Check color regions
+    Set<Color> checkedColors = {};
+    for (int row = 0; row < gridSize; row++) {
+      for (int col = 0; col < gridSize; col++) {
+        Color regionColor = colorRegions[row][col];
+        if (!checkedColors.contains(regionColor)) {
+          checkedColors.add(regionColor);
+          bool isRegionBlocked = true;
+          for (int r = 0; r < gridSize; r++) {
+            for (int c = 0; c < gridSize; c++) {
+              if (colorRegions[r][c] == regionColor && 
+                  _getCellState(r, c) != CellState.blocked) {
+                isRegionBlocked = false;
+                break;
+              }
+            }
+            if (!isRegionBlocked) break;
+          }
+          if (isRegionBlocked) {
+            hasBlockedRegion = true;
+            break;
+          }
+        }
+      }
+      if (hasBlockedRegion) break;
+    }
+
+    // If no violations are found, clear the error state
+    if (!hasBlockedRow && !hasBlockedColumn && !hasBlockedDiagonal && !hasBlockedRegion) {
+      setState(() {
+        _errorCells = {};
+        _violatedRules = {};
+      });
+    }
+  }
+
+  // Add these methods to handle actions
+  void _recordAction(Map<String, CellState> changedCells) {
+    Map<String, CellState> previousStates = {};
+    Map<String, CellState> newStates = {};
+    
+    for (var key in changedCells.keys) {
+      previousStates[key] = cellStates[key] ?? CellState.empty;
+      newStates[key] = changedCells[key]!;
+    }
+    
+    _actionHistory.add(GameAction(previousStates, newStates));
+  }
+
+  void _undo() {
+    if (_actionHistory.isEmpty) return;
+    
+    setState(() {
+      final action = _actionHistory.removeLast();
+      
+      // Remove the new states (current states) from the cellStates map
+      action.newStates.keys.forEach((key) {
+        cellStates.remove(key);
+      });
+      
+      // Only add back non-empty previous states
+      action.previousStates.forEach((key, state) {
+        if (state != CellState.empty) {
+          cellStates[key] = state;
+        }
+      });
+      
+      // Check for any remaining violations
+      _clearViolationsIfResolved();
+      _checkAllQueensViolations();
+    });
+  }
+
+  void _clearBoard() {
+    if (cellStates.isEmpty) return;
+    
+    setState(() {
+      // Record the clear action
+      Map<String, CellState> clearedStates = Map.from(cellStates);
+      _recordAction(clearedStates);
+      
+      // Clear the board
+      cellStates.clear();
+      _errorCells.clear();
+      _violatedRules.clear();
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
+        title: _showTimer ? Text(_formatDuration(_elapsedTime)) : null,
         actions: [
+          IconButton(
+            icon: Icon(Icons.undo),
+            onPressed: _actionHistory.isEmpty ? null : _undo,
+            tooltip: 'Undo',
+          ),
+          IconButton(
+            icon: Icon(Icons.clear_all),
+            onPressed: cellStates.isEmpty ? null : _clearBoard,
+            tooltip: 'Clear Board',
+          ),
+          IconButton(
+            icon: Icon(_isTimerRunning ? Icons.pause : Icons.play_arrow),
+            onPressed: _toggleTimer,
+            tooltip: _isTimerRunning ? 'Pause Timer' : 'Start Timer',
+          ),
+          IconButton(
+            icon: Icon(_showTimer ? Icons.timer_off : Icons.timer),
+            onPressed: () => setState(() => _showTimer = !_showTimer),
+            tooltip: _showTimer ? 'Hide Timer' : 'Show Timer',
+          ),
           IconButton(
             icon: Icon(_showSolution ? Icons.visibility_off : Icons.visibility),
             onPressed: () => setState(() => _showSolution = !_showSolution),
@@ -531,6 +1125,7 @@ class _QueensGameScreenState extends State<QueensGameScreen> {
             padding: const EdgeInsets.all(8.0),
             child: Column(
               children: [
+                _buildRulesDisplay(),
                 if (_errorMessage != null)
                   Padding(
                     padding: const EdgeInsets.all(16.0),
@@ -562,7 +1157,9 @@ class _QueensGameScreenState extends State<QueensGameScreen> {
                       child: LayoutBuilder(
                         builder: (context, constraints) {
                           return GestureDetector(
+                            onPanStart: (details) => _handleDragStart(details, context, constraints),
                             onPanUpdate: (details) => _handleDragUpdate(details, context, constraints),
+                            onPanEnd: _handleDragEnd,
                             child: ColorFiltered(
                               colorFilter: ColorFilter.mode(
                                 _hasWon ? Colors.grey : Colors.transparent,
@@ -585,8 +1182,9 @@ class _QueensGameScreenState extends State<QueensGameScreen> {
                                     onTap: () => toggleCell(row, col),
                                     child: Container(
                                       decoration: BoxDecoration(
-                                        border: Border.all(color: Colors.black12),
-                                        color: cellColor == Colors.transparent ? cellColor : cellColor.withAlpha((0.3 * 255).round()),
+                                        color: cellColor == Colors.transparent ? 
+                                          cellColor : 
+                                          cellColor.withAlpha((0.3 * 255).round()),
                                         gradient: isError ? LinearGradient(
                                           begin: Alignment.topLeft,
                                           end: Alignment.bottomRight,
@@ -594,6 +1192,24 @@ class _QueensGameScreenState extends State<QueensGameScreen> {
                                           stops: [0.4, 0.6],
                                           tileMode: TileMode.repeated,
                                         ) : null,
+                                        border: Border(
+                                          top: BorderSide(
+                                            color: Colors.black,
+                                            width: _shouldDrawBorder(row, col, 0) ? 1.0 : 0.0,
+                                          ),
+                                          right: BorderSide(
+                                            color: Colors.black,
+                                            width: _shouldDrawBorder(row, col, 1) ? 1.0 : 0.0,
+                                          ),
+                                          bottom: BorderSide(
+                                            color: Colors.black,
+                                            width: _shouldDrawBorder(row, col, 2) ? 1.0 : 0.0,
+                                          ),
+                                          left: BorderSide(
+                                            color: Colors.black,
+                                            width: _shouldDrawBorder(row, col, 3) ? 1.0 : 0.0,
+                                          ),
+                                        ),
                                       ),
                                       child: Center(
                                         child: _buildCellContent(state),
@@ -619,6 +1235,7 @@ class _QueensGameScreenState extends State<QueensGameScreen> {
 
   @override
   void dispose() {
+    _gameTimer?.cancel();
     _errorTimer?.cancel();
     super.dispose();
   }
@@ -626,8 +1243,5 @@ class _QueensGameScreenState extends State<QueensGameScreen> {
 
 
 // TODO: 
-//Add a timer to the game
 //Add a hint system
-//Let user drag to remove the blocked cells
-//add undo button to remove the last action (e.g. placed cell, dragged cells, etc.)
-//add a reset button to reset the board to the initial state
+//Make the levels not totally random, but more easily solvable through known tactics.
